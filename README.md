@@ -90,5 +90,5 @@ of low-latency systems — cache hierarchy, memory ordering, allocation strategi
 The goal is to close the gap between "my current skills" and the " skills i want to have "
 
 ## AI USE AND HOW MUCH 
-yes i used ai for this project as it was my first project that i made at this level 
+Yes i used ai for this project as it was my first project that i made at this level. 
 AI was used for project file Architecture, and what type of functions and lines should be written by me.
