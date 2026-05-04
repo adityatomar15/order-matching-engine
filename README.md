@@ -32,9 +32,6 @@ Takes a stream of limit orders (buy/sell, price, quantity), matches them by pric
 | Avg latency per order | **2,760 ns (2.76 µs)**  |
 | Throughput            | **~362,000 orders/sec** |
 
-2,760 ns is slow for HFT standards (production engines run 50–200 ns "said by AI"). 
-I know exactly why — mutex overhead on the threading skeleton, cache misses on price level lookups, 
-and the SPSC ring buffer isn't integrated yet. The roadmap below is the fix ("AI HELPED ME ON IDENTIFYING THESE ISSUES")
 
 ---
 
