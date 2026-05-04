@@ -71,17 +71,15 @@ cmake --build .
 
 ## What I learned building this
 
-The memory model stuff was the hardest part. Writing the SPSC buffer wasn't difficult — understanding *why* 
-`memory_order_acquire` on the load and `memory_order_release` on the store is the correct pairing, and what happens on x86 vs ARM if you get it wrong,
-took considerably longer. Still debugging the integration.
-
-The memory pool was surprisingly satisfying. Watching `malloc` calls disappear from the profiler output after switching to `pmr` was a good moment.
+Creating and using new function specific for an program in c++ was very fun.
+The code logic went over my head multiple times and had me confused for a while 
+on how to intergrate these functions together.
 
 ---
 
 ## What this isn't
 
-This is not a production system. It has no network layer, no FIX protocol, no persistence. It's a learning project built to understand the *engineering constraints*
+This is not a production system. It's a learning project built to understand the *real world use in complex tasks*
 of low-latency systems — cache hierarchy, memory ordering, allocation strategies, and profiling methodology.
 
 The goal is to close the gap between "my current skills" and the " skills i want to have "
