@@ -122,7 +122,6 @@ int main() {
     constexpr size_t NUM_ORDERS = 100'000;
     Timestamp ts = 0;
 
-    // Warm‑up
     for (size_t i = 0; i < 10'000; ++i) {
         book.addOrder(priceDist(rng), qtyDist(rng),
                       sideDist(rng) ? Side::Buy : Side::Sell, ts++);
