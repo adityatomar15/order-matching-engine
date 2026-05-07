@@ -59,7 +59,7 @@ Takes a stream of limit orders (buy/sell, price, quantity), matches them by pric
 - Linux or WSL2
 
 ```bash
-git clone https://github.com/[adityatomar15]/order-matching-engine.git
+git clone https://github.com/adityatomar15/order-matching-engine.git
 cd order-matching-engine
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -80,8 +80,8 @@ Building this forced me to confront the real cost of memory allocation. Profilin
 This is not a production system. It's a learning project built to understand the *real world use in complex tasks*
 of low-latency systems — cache hierarchy, memory ordering, allocation strategies, and profiling methodology.
 
-The goal is to close the gap between "my current skills" and the " skills i want to have "
+This is not a production system. It's a learning project built to understand the real demands of low-latency infrastructure — cache hierarchy, memory ordering, allocation strategies, and honest profiling methodology
 
 ## AI USE AND HOW MUCH 
 Yes i used ai for this project as it was my first project that i made at this level. 
-AI was used for project file Architecture, and what type of functions and lines should be written by me.
+AI was used for project structure and as a debugging reference. All implementation decisions, benchmarking methodology, and architectural choices are my own
