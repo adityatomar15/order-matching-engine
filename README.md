@@ -59,7 +59,7 @@ Takes a stream of limit orders (buy/sell, price, quantity), matches them by pric
 - Linux or WSL2
 
 ```bash
-git clone https://github.com/[YOUR_USERNAME]/order-matching-engine.git
+git clone https://github.com/[adityatomar15]/order-matching-engine.git
 cd order-matching-engine
 mkdir build && cd build
 cmake .. -DCMAKE_BUILD_TYPE=Release
@@ -71,9 +71,7 @@ cmake --build .
 
 ## What I learned building this
 
-Creating and using new function specific for an program in c++ was very fun.
-The code logic went over my head multiple times and had me confused for a while 
-on how to intergrate these functions together.
+Building this forced me to confront the real cost of memory allocation. Profiling revealed that std::allocator on the hot path was the single biggest latency killer — implementing std::pmr::monotonic_buffer_resource dropped allocation overhead to zero. Understanding placement new and allocator propagation wasn't optional, it was load-bearing. The nanosecond profiler exposed how much cold-cache numbers lie — warm-up cycles aren't optional in serious benchmarking.
 
 ---
 
