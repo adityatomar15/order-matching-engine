@@ -76,10 +76,6 @@ Building this forced me to confront the real cost of memory allocation. Profilin
 ---
 
 ## What this isn't
-
-This is not a production system. It's a learning project built to understand the *real world use in complex tasks*
-of low-latency systems — cache hierarchy, memory ordering, allocation strategies, and profiling methodology.
-
 This is not a production system. It's a learning project built to understand the real demands of low-latency infrastructure — cache hierarchy, memory ordering, allocation strategies, and honest profiling methodology
 
 ## AI USE AND HOW MUCH 
