@@ -1,53 +1,62 @@
-# C++ Order Matching Engine
+# C++20 Order Matching Engine
 
-I built this to actually understand how order books work at the hardware level — not just the theory. It's a single-threaded, price-time priority matching engine written in C++20, with a custom memory pool so the hot path never touches the heap.
+Built to understand how order books work at the hardware level — not just the theory. A price-time priority matching engine written in C++20, evolving from a heap-allocated baseline to a price-ladder architecture validated against live market data.
 
 This is a work in progress. The roadmap is honest about what's next.
 
 ---
 
+## Architecture Evolution
+
+### v1 — Baseline
+Single-threaded, price-time priority core with a custom `std::pmr::monotonic_buffer_resource` memory pool. Zero `malloc` calls on the hot path.
+
+### v2 — Price Ladder + Live Data Validation
+Replaced pointer-chased `std::map` price levels with a flat `std::array<Level>` price ladder and a lock-free SPSC ring buffer for order submission. Validated against 27,104 real Binance BTC/USDT Add events captured over 5 minutes of live market feed.
+
+---
+
+## Benchmarks
+
+### v1 — Heap Allocated Baseline
+> i5-1334U, GCC 13, `-O3 -march=native`, WSL2 Ubuntu 24.04
+
+| Metric | Value |
+|---|---|
+| Orders processed | 100,000 |
+| Trades executed | ~49,500 |
+| Avg latency/order | **2,760 ns** |
+| Throughput | **362K orders/sec** |
+
+### v2 — Price Ladder, Real Binance Data
+> i5-1334U, GCC 13, `-O3 -march=native`, WSL2 Ubuntu 24.04
+> Dataset: 27,104 BTC/USDT Add events, 5 minutes live capture
+
+| Metric | Value |
+|---|---|
+| Add events | 27,104 |
+| Trades executed | 11,948 |
+| Avg latency/order | **60.6 ns** |
+| Single run throughput | **16.49M orders/sec** |
+| Average across 10 runs | **43.59M orders/sec** |
+
+**28x throughput improvement over v1. Validated on real exchange order flow — not synthetic data.**
+
+---
+
 ## What it does
 
-Takes a stream of limit orders (buy/sell, price, quantity), matches them by price-time priority, and spits out trades. Standard stuff — but the interesting part is the infrastructure underneath.
+**Price-Time Priority** — best bid matches against best ask by price then timestamp. No shortcuts.
 
-**Price-Time Priority** — best bid (highest price, earliest timestamp) matches against best ask (lowest price, earliest timestamp). No shortcuts.
+**Memory Pool** — `std::pmr::monotonic_buffer_resource` with 1 MiB pre-allocated buffer. Zero heap allocation on hot path.
 
-**Memory Pool** — using `std::pmr::monotonic_buffer_resource` with a 1 MiB pre-allocated buffer. Orders are placed directly into the pool at startup. Zero `malloc` calls on the hot path. This was the most educational part to build — understanding placement new, allocator propagation, and why the default allocator is a latency killer.
+**Price Ladder (v2)** — flat `std::array<Level>` replaces pointer-chased structures. Cache-friendly, O(1) best bid/ask lookup.
 
-**Profiler** — nanosecond resolution via `std::chrono`, with a warm-up cycle before measurement starts (cold cache numbers are meaningless).
+**Live Data Feed** — real Binance BTC/USDT order flow captured via WebSocket, replayed deterministically for benchmarking.
 
-**Modular layout** — `Order`, `Trade`, `MemoryPool`, `OrderBook` are separate classes. Makes it easier to swap components and benchmark them individually.
+**Profiler** — nanosecond resolution via `std::chrono` with warm-up cycle. Cold cache numbers are meaningless.
 
----
-
-## Benchmark — First Iteration
-
-> Compiled with `-O3 -march=native` on Intel i7-12700H, WSL2 Ubuntu 24.04, GCC 13, C++20.
-
-| Metric                | Value                   |
-|---                    |---                      |
-| Orders processed      | 100,000                 |
-| Trades executed       | ~49,500                 |
-| Total time            | 276 ms                  |
-| Avg latency per order | **2,760 ns (2.76 µs)**  |
-| Throughput            | **~362,000 orders/sec** |
-
-
----
-
-## Roadmap
-
-- [x] Price-time priority matching core
-- [x] `std::pmr` memory pool — zero heap allocation on hot path
-- [x] Single-threaded benchmark harness
-- [x] Multi-threaded submission skeleton (`std::mutex` / `std::condition_variable`)
-- [ ] Integrate lock-free SPSC ring buffer (`std::atomic`, acquire/release ordering)
-- [ ] `alignas(64)` cache line alignment on Order struct — eliminate false sharing
-- [ ] Flat pre-allocated price level arrays — replace pointer-chased structures
-- [ ] `rdtsc` cycle-accurate profiler — replace `std::chrono` on hot path
-- [ ] Thread pinning + CPU affinity (`pthread_setaffinity_np`)
-- [ ] Sharded order book (parallel matching across price ranges)
-- [ ] Target: sub-500 ns per order, 1M+ orders/sec
+**Modular layout** — `Order`, `Trade`, `MemoryPool`, `OrderBook` as swappable components. Benchmark them individually.
 
 ---
 
@@ -67,17 +76,46 @@ cmake --build .
 ./engine
 ```
 
+**Run v2 with real data:**
+```bash
+./v2_real_data data/market_data_adapted.csv
+```
+
+---
+
+## Roadmap
+
+- [x] Price-time priority matching core
+- [x] `std::pmr` memory pool — zero heap allocation on hot path
+- [x] Single-threaded benchmark harness with warm-up cycle
+- [x] Price ladder architecture — `std::array<Level>` replacing pointer-chased structures
+- [x] Live Binance data feed integration — real market order flow validation
+- [x] Lock-free SPSC ring buffer (`std::atomic`, acquire/release ordering)
+- [ ] `alignas(64)` cache line alignment on Order struct — eliminate false sharing
+- [ ] `rdtsc` cycle-accurate profiler — replace `std::chrono` on hot path
+- [ ] Thread pinning + CPU affinity (`pthread_setaffinity_np`)
+- [ ] Cancel and modify order handling
+- [ ] Sharded order book — parallel matching across price ranges
+- [ ] Target: sub-20 ns/order on optimized hardware
+
 ---
 
 ## What I learned building this
 
-Building this forced me to confront the real cost of memory allocation. Profiling revealed that std::allocator on the hot path was the single biggest latency killer — implementing std::pmr::monotonic_buffer_resource dropped allocation overhead to zero. Understanding placement new and allocator propagation wasn't optional, it was load-bearing. The nanosecond profiler exposed how much cold-cache numbers lie — warm-up cycles aren't optional in serious benchmarking.
+**v1** forced me to confront the real cost of memory allocation. Profiling revealed `std::allocator` on the hot path was the single biggest latency killer. Implementing `std::pmr::monotonic_buffer_resource` dropped allocation overhead to zero. Understanding placement new and allocator propagation wasn't optional — it was load-bearing.
+
+**v2** taught me that data structure choice matters more than micro-optimization. Replacing `std::map` price levels with a flat `std::array` price ladder produced a 28x throughput improvement — not from clever tricks, but from eliminating pointer chasing and letting the CPU prefetcher do its job. Validating against real Binance data also exposed the gap between synthetic benchmarks and actual market order flow patterns.
+
+The nanosecond profiler exposed how much cold-cache numbers lie. Warm-up cycles aren't optional in serious benchmarking.
 
 ---
 
 ## What this isn't
-This is not a production system. It's a learning project built to understand the real demands of low-latency infrastructure — cache hierarchy, memory ordering, allocation strategies, and honest profiling methodology
 
-## AI USE AND HOW MUCH 
-Yes i used ai for this project as it was my first project that i made at this level. 
-AI was used for project structure and as a debugging reference. All implementation decisions, benchmarking methodology, and architectural choices are my own
+This is not a production system. It's a learning project built to understand the real demands of low-latency infrastructure — cache hierarchy, memory ordering, allocation strategies, and honest profiling methodology. Production matching engines also require network stack integration, persistence, risk checks, and concurrent load testing this project doesn't attempt.
+
+---
+
+## AI Use
+
+AI was used for project structure and as a debugging reference. All implementation decisions, architectural choices, benchmarking methodology, and the v2 price ladder redesign are my own.
