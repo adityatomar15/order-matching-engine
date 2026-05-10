@@ -90,7 +90,7 @@ cmake --build .
 - [x] Single-threaded benchmark harness with warm-up cycle
 - [x] Price ladder architecture — `std::array<Level>` replacing pointer-chased structures
 - [x] Live Binance data feed integration — real market order flow validation
-- [x] Lock-free SPSC ring buffer (`std::atomic`, acquire/release ordering)
+- [ ] Lock-free SPSC ring buffer (`std::atomic`, acquire/release ordering)
 - [ ] `alignas(64)` cache line alignment on Order struct — eliminate false sharing
 - [ ] `rdtsc` cycle-accurate profiler — replace `std::chrono` on hot path
 - [ ] Thread pinning + CPU affinity (`pthread_setaffinity_np`)
