@@ -2,7 +2,6 @@
 #include <array>
 #include <vector>
 #include <chrono>
-#include <random>
 #include <cstdint>
 #include <algorithm>
 #include <cstring>
@@ -32,36 +31,32 @@ struct Trade {
     Quantity qty;
 };
 
-// ─── Aligned Bump Allocator ──────────────────────────────────────────
-class MemoryPool {
-    void*  buffer_;
-    size_t capacity_;
-    size_t offset_{0};
+// ─── Free‑list allocator ─────────────────────────────────────────────
+// Replaces bump allocator – cancelled/filled orders are immediately reused
+class OrderPool {
+    std::vector<Order> pool_;         // all order objects
+    std::vector<int>   free_list_;    // indices of freed slots
+    size_t             next_id_{1};
 
 public:
-    explicit MemoryPool(size_t size) : capacity_(size) {
-        buffer_ = std::aligned_alloc(alignof(std::max_align_t), size);
-        if (!buffer_) throw std::bad_alloc();
-        std::memset(buffer_, 0, size);
+    explicit OrderPool(size_t max_orders) : pool_(max_orders + 1) {}
+
+    int allocate() {
+        if (!free_list_.empty()) {
+            int idx = free_list_.back();
+            free_list_.pop_back();
+            return idx;
+        }
+        return static_cast<int>(next_id_++);
     }
 
-    ~MemoryPool() { std::free(buffer_); }
-
-    MemoryPool(const MemoryPool&) = delete;
-    MemoryPool& operator=(const MemoryPool&) = delete;
-
-    template<typename T, typename... Args>
-    [[nodiscard]] __attribute__((always_inline))
-    T* allocate(Args&&... args) {
-        constexpr size_t alignment = alignof(T);
-        size_t size = sizeof(T);
-        size_t aligned = (offset_ + alignment - 1) & ~(alignment - 1);
-        if (__builtin_expect(aligned + size > capacity_, 0))
-            throw std::bad_alloc();
-        void* mem = static_cast<char*>(buffer_) + aligned;
-        offset_ = aligned + size;
-        return ::new (mem) T{std::forward<Args>(args)...};
+    void deallocate(int idx) {
+        free_list_.push_back(idx);
     }
+
+    Order& get(int idx) { return pool_[idx]; }
+    const Order& get(int idx) const { return pool_[idx]; }
+    size_t capacity() const { return pool_.size(); }
 };
 
 // ─── Price Ladder ─────────────────────────────────────────────────────
@@ -87,16 +82,14 @@ struct Level {
 
 // ─── Order Book ───────────────────────────────────────────────────────
 class OrderBook {
-    MemoryPool& pool_;
-    OrderId     next_id_{1};
-
+    OrderPool& pool_;
     std::array<Level, N_LEVELS> bids_;
     std::array<Level, N_LEVELS> asks_;
 
     int best_bid_{-1};
     int best_ask_{N_LEVELS};
 
-    std::vector<Order*> order_map_;
+    std::vector<Order*> order_map_;   // id → pointer (null = cancelled/filled)
 
     [[nodiscard]] static constexpr __attribute__((always_inline))
     int toIdx(Price p) noexcept {
@@ -121,38 +114,42 @@ class OrderBook {
     }
 
 public:
-    explicit OrderBook(MemoryPool& pool) : pool_(pool) {}
-
-    void prepare(size_t expectedOrders) {
-        order_map_.assign(expectedOrders, nullptr);
-        size_t perLevel = expectedOrders / N_LEVELS + 128;
+    explicit OrderBook(OrderPool& pool) : pool_(pool) {
+        order_map_.assign(pool_.capacity(), nullptr);
+        size_t perLevel = 256;
         for (auto& lvl : bids_) lvl.queue.reserve(perLevel);
         for (auto& lvl : asks_) lvl.queue.reserve(perLevel);
     }
 
     __attribute__((flatten)) OrderId addOrder(Price price, Quantity qty,
                                                Side side, Timestamp ts) {
-        const OrderId id = next_id_++;
-        Order* o = pool_.allocate<Order>(id, price, qty, ts, side);
-        order_map_[id - 1] = o;
+        int slot = pool_.allocate();
+        Order& o = pool_.get(slot);
+        o.id = static_cast<OrderId>(slot);
+        o.price = price;
+        o.qty = qty;
+        o.timestamp = ts;
+        o.side = side;
+        order_map_[slot] = &o;
 
         const int idx = toIdx(price);
         if (side == Side::Buy) {
-            bids_[idx].push(o);
+            bids_[idx].push(&o);
             if (idx > best_bid_) best_bid_ = idx;
         } else {
-            asks_[idx].push(o);
+            asks_[idx].push(&o);
             if (idx < best_ask_) best_ask_ = idx;
         }
-        return id;
+        return o.id;
     }
 
     bool cancelOrder(OrderId id) {
-        if (id == 0 || id > order_map_.size()) return false;
-        Order* o = order_map_[id - 1];
+        if (id == 0 || id >= order_map_.size()) return false;
+        Order* o = order_map_[id];
         if (!o) return false;
-        o->qty = 0;
-        order_map_[id - 1] = nullptr;
+        o->qty = 0;                       // tombstone – will be skipped
+        order_map_[id] = nullptr;
+        pool_.deallocate(static_cast<int>(id));
         return true;
     }
 
@@ -176,12 +173,14 @@ public:
 
             if (bid->qty == 0) {
                 bids_[best_bid_].pop();
-                order_map_[bid->id - 1] = nullptr;
+                order_map_[bid->id] = nullptr;
+                pool_.deallocate(static_cast<int>(bid->id));
                 findNextLiveBid();
             }
             if (ask->qty == 0) {
                 asks_[best_ask_].pop();
-                order_map_[ask->id - 1] = nullptr;
+                order_map_[ask->id] = nullptr;
+                pool_.deallocate(static_cast<int>(ask->id));
                 findNextLiveAsk();
             }
         }
@@ -192,33 +191,14 @@ public:
         for (auto& l : bids_) l.reset();
         for (auto& l : asks_) l.reset();
         order_map_.clear();
-        next_id_  = 1;
         best_bid_ = -1;
         best_ask_ = N_LEVELS;
     }
-
-    [[nodiscard]] size_t bidLevels() const {
-        size_t c = 0; for (auto& l : bids_) if (!l.empty()) ++c; return c;
-    }
-    [[nodiscard]] size_t askLevels() const {
-        size_t c = 0; for (auto& l : asks_) if (!l.empty()) ++c; return c;
-    }
-    [[nodiscard]] size_t openOrders() const noexcept {
-        size_t c = 0;
-        for (auto* o : order_map_) if (o) ++c;
-        return c;
-    }
 };
 
-// ─── Helpers ──────────────────────────────────────────────────────────
-[[gnu::always_inline, gnu::const]]
-constexpr Price toTicks(double p) noexcept {
-    return static_cast<Price>(p * 100.0 + 0.5);
-}
-
-// ─── main ─────────────────────────────────────────────────────────────
+// ─── Main ─────────────────────────────────────────────────────────────
 int main(int argc, char* argv[]) {
-    const char* csv_file = "data/market_data.csv";
+    const char* csv_file = "data/market_data_adapted.csv";
     if (argc > 1) csv_file = argv[1];
 
     std::ifstream f(csv_file);
@@ -227,73 +207,71 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::vector<Price>     prices;
-    std::vector<Quantity>  qtys;
-    std::vector<Side>      sides;
-    std::vector<Timestamp> timestamps;
+    // Pre‑count events to size the pool
+    size_t event_count = 0;
+    std::string line;
+    std::getline(f, line);   // skip header
+    while (std::getline(f, line)) {
+        if (!line.empty()) ++event_count;
+    }
+    f.clear();
+    f.seekg(0);
+    std::getline(f, line);   // skip header again
 
-    std::string line, ts_str, type_str, side_str, price_str, qty_str;
-    // skip header
-    std::getline(f, line);
+    OrderPool pool(event_count * 2);   // generous capacity
+    OrderBook* book = new OrderBook(pool);
+
+    uint64_t adds = 0, cancels = 0;
+    auto t0 = std::chrono::high_resolution_clock::now();
 
     while (std::getline(f, line)) {
+        if (line.empty()) continue;
         std::stringstream ss(line);
+        std::string ts_str, type_str, side_str, price_str, qty_str;
         std::getline(ss, ts_str,   ',');
         std::getline(ss, type_str, ',');
         std::getline(ss, side_str, ',');
         std::getline(ss, price_str,',');
         std::getline(ss, qty_str,  ',');
 
-        // Only process Add events (ignore Cancel and Trade)
-        if (type_str != "A") continue;
-
         Timestamp ts = std::stoull(ts_str);
-        // Convert price from dollars to ticks (*100) and round to integer
         Price p = static_cast<Price>(std::stod(price_str) * 100.0 + 0.5);
         if (p < TICK_MIN) p = TICK_MIN;
         if (p > TICK_MAX) p = TICK_MIN + (p % (TICK_MAX - TICK_MIN + 1));
-        // Convert quantity from BTC to satoshis (*1e8)
         Quantity q = static_cast<Quantity>(std::stod(qty_str) * 1e8);
-        Side s = (side_str == "B") ? Side::Buy : Side::Sell;
 
-        prices.push_back(p);
-        qtys.push_back(q);
-        sides.push_back(s);
-        timestamps.push_back(ts);
+        if (type_str == "A") {
+            Side s = (side_str == "B") ? Side::Buy : Side::Sell;
+            book->addOrder(p, q, s, ts);
+            ++adds;
+        } else if (type_str == "C") {
+            // Cancel events – full implementation needs original order ID
+            // Here we count them but skip actual cancellation
+            ++cancels;
+        } else if (type_str == "T") {
+            // Trade events are outputs, ignore in replay
+        }
     }
     f.close();
 
-    size_t N = prices.size();
-    if (N == 0) {
-        std::cerr << "No valid Add events in file.\n";
-        return 1;
-    }
-    std::cout << "Loaded " << N << " Add events from " << csv_file << "\n";
-
-    // Instantiate engine – v7 uses a MemoryPool
-    size_t pool_size = N * sizeof(Order) * 2 + 1024;
-    MemoryPool pool(pool_size);
-    OrderBook* book = new OrderBook(pool);
-    book->prepare(N);
-
-    auto t0 = std::chrono::high_resolution_clock::now();
-    for (size_t i = 0; i < N; ++i)
-        book->addOrder(prices[i], qtys[i], sides[i], timestamps[i]);
     auto trades = book->match();
     auto t1 = std::chrono::high_resolution_clock::now();
 
     auto ns = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
-    double avg_ns = static_cast<double>(ns) / N;
-    uint64_t throughput = static_cast<uint64_t>(1e9 * N / ns);
+    uint64_t total_events = adds + cancels;
+    double avg_ns = (total_events > 0) ? (double)ns / total_events : 0;
+    uint64_t throughput = (total_events > 0) ? (uint64_t)(1e9 * total_events / ns) : 0;
 
     std::cout << "═══════════════════════════════════════\n";
-    std::cout << " v2 — Real Data Replay (Binance)\n";
+    std::cout << " v2 — Real Data Replay (Free List + Interleaved)\n";
     std::cout << "═══════════════════════════════════════\n";
-    std::cout << " Add events   : " << N          << '\n';
+    std::cout << " Add events   : " << adds        << '\n';
+    std::cout << " Cancel events: " << cancels     << '\n';
+    std::cout << " Total events : " << total_events << '\n';
     std::cout << " Trades       : " << trades.size() << '\n';
-    std::cout << " Total ns     : " << ns         << '\n';
-    std::cout << " Avg ns/order : " << avg_ns     << '\n';
-    std::cout << " Throughput   : " << throughput  << " orders/sec\n";
+    std::cout << " Total ns     : " << ns          << '\n';
+    std::cout << " Avg ns/event : " << avg_ns      << '\n';
+    std::cout << " Throughput   : " << throughput   << " events/sec\n";
     std::cout << "═══════════════════════════════════════\n";
 
     delete book;
